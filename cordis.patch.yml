@@ -1,0 +1,10 @@
+# Optional profile bundle: register the primary Claude Code model adapter and
+# select its stable default alias. User and profile overlays still apply later.
+- insert:
+    - id: llm-claude-code
+      name: dsh-claude-plugin
+
+- id: agent-default-model
+  config:
+    provider: claude-code
+    model: default

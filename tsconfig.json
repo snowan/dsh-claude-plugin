@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

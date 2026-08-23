@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24.x]
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
