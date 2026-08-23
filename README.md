@@ -11,8 +11,15 @@ Developed by [snowan](https://github.com/snowan) with Codex assistance.
 
 ## Status
 
-Repository bootstrap only. Research, proposal, implementation, integration
-tests, and benchmark reports will land through subsequent pull requests.
+Research and architecture are under review. Implementation, integration tests,
+and benchmark reports will land through subsequent pull requests.
+
+## Design documents
+
+- [Current-source research](docs/research.md)
+- [Architecture proposal](docs/proposal.md)
+- [Detailed implementation plan](docs/implementation-plan.md)
+- [Authors and provenance](AUTHORS.md)
 
 ## License
 
