@@ -317,7 +317,7 @@ describe('benchmark report rendering', () => {
     node: 'v24.0.0',
     platform: 'darwin',
     arch: 'arm64',
-    dsh: '0.1.1-rc.2',
+    dsh: '0.2.0-rc.2',
     sdk: '0.3.241',
     claudeCode: '2.1.241',
     model: 'sonnet',

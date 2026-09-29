@@ -32,14 +32,17 @@ runs Chromium and treats browser coverage as required.
 
 The runner performs these operations inside one temporary fixture:
 
-1. installs `@deepseek-ai/dsh@0.1.1-rc.2`;
+1. installs `@deepseek-ai/dsh@0.2.0-rc.2`;
 2. packs the exact plugin checkout and records its SHA-256 digest;
 3. installs the tarball into an isolated `web` profile;
 4. verifies that only `llm-claude-code` and `agent-default-model` changed;
-5. runs installed-profile doctor without an authenticated generation;
-6. starts DSH on an OS-assigned `127.0.0.1` port;
+5. runs the checkout doctor without an authenticated generation, because
+   `dsh plugin exec` cannot load DSH 0.2 packages;
+6. starts DSH on an OS-assigned `127.0.0.1` port and exchanges its launch
+   token for the browser-session cookie that every RPC call sends;
 7. pins DSH's browser directory picker only for Playwright automation;
-8. opens the actual WebUI and selects a disposable workspace;
+8. opens the actual WebUI and adds a disposable workspace next to DSH's
+   default workspace;
 9. verifies the Claude Code model menu and public RPC state;
 10. stops DSH and proves its listener and descendants are gone.
 
@@ -58,7 +61,7 @@ claude auth status
 npm run test:web:live
 ```
 
-The installed-profile doctor is the lane's first authenticated gate. The Web
+The checkout doctor is the lane's first authenticated gate. The Web
 server is not started when exact generation fails, so a stale login cannot be
 misreported as an application failure. The live scenarios then verify:
 
@@ -116,7 +119,7 @@ Debug output may include local paths or upstream error text and must not be
 copied into a public issue without review. The JSON report remains sanitized.
 
 Set `DSH_WEB_TEST_BIN` to an existing executable only when it reports exactly
-DSH `0.1.1-rc.2`; the runner refuses version drift.
+DSH `0.2.0-rc.2`; the runner refuses version drift.
 
 ## Start a manual local WebUI from this checkout
 
@@ -130,9 +133,9 @@ npm pack
 DSH_CLAUDE_WEB_HOME="$(mktemp -d /tmp/dsh-claude-web.XXXXXX)"
 export DSH_HOME="$DSH_CLAUDE_WEB_HOME/dsh"
 export DSH_AGENTS_HOME="$DSH_CLAUDE_WEB_HOME/agents"
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web add "$(pwd)/dsh-claude-plugin-0.1.0.tgz"
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 web --host 127.0.0.1 --port 3080 --no-open
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add "$(pwd)/dsh-claude-plugin-0.1.0.tgz"
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 web --host 127.0.0.1 --port 3080 --no-open
 ```
 
 Before opening `http://127.0.0.1:3080`, verify that the listener PID belongs

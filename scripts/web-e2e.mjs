@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -16,13 +16,14 @@ import {
   historyHasAssistantMarker,
   historyHasToolResultMarker,
   inspectClaudeCatalog,
-  parseDshReadyUrl,
+  authenticateDshWeb,
+  parseDshWebLaunch,
   stableFailureCode,
   summarizeHistory,
 } from '../lib/web-e2e.js'
 import { verifyProfileTransition } from '../lib/profile-verifier.js'
 
-const EXPECTED_DSH_VERSION = '0.1.1-rc.2'
+const EXPECTED_DSH_VERSION = '0.2.0-rc.2'
 const EXPECTED_PLAYWRIGHT_VERSION = '1.61.1'
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1_024 * 1_024
 const MAX_SERVER_OUTPUT_BYTES = 256 * 1_024
@@ -59,7 +60,7 @@ Options:
 The default keyless lane installs the packed plugin into a temporary Web
 profile, boots current DSH on an OS-assigned loopback port, verifies the Claude
 catalog/default/error boundary, opens the real WebUI, then proves process and
-listener cleanup. --live first requires the installed doctor to pass.
+listener cleanup. --live first requires the checkout doctor to pass.
 `)
   process.exit(0)
 }
@@ -212,7 +213,7 @@ async function startWeb(dshBin, workspace, environment, pickerOverlay) {
   )
   if (child.pid === undefined) throw new WebE2eFailure('DSH_SPAWN_FAILED', 'DSH returned no PID')
   let output = ''
-  let readyUrl
+  let launch
   const ready = new Promise((resolveReady, rejectReady) => {
     const timer = setTimeout(() => {
       rejectReady(new WebE2eFailure('DSH_READY_TIMEOUT', 'DSH Web did not become ready'))
@@ -220,11 +221,11 @@ async function startWeb(dshBin, workspace, environment, pickerOverlay) {
     const onData = (chunk) => {
       output = appendBounded(output, chunk)
       try {
-        const parsedUrl = parseDshReadyUrl(output)
-        if (parsedUrl !== undefined && readyUrl === undefined) {
-          readyUrl = parsedUrl
+        const parsed = parseDshWebLaunch(output)
+        if (parsed !== undefined && launch === undefined) {
+          launch = parsed
           clearTimeout(timer)
-          resolveReady(parsedUrl)
+          resolveReady(parsed)
         }
       } catch {
         clearTimeout(timer)
@@ -234,18 +235,26 @@ async function startWeb(dshBin, workspace, environment, pickerOverlay) {
     child.stdout?.on('data', onData)
     child.stderr?.on('data', onData)
     child.once('exit', () => {
-      if (readyUrl === undefined) {
+      if (launch === undefined) {
         clearTimeout(timer)
         rejectReady(new WebE2eFailure('DSH_EXITED_EARLY', 'DSH exited before readiness'))
       }
     })
   })
   try {
-    const baseUrl = await ready
+    const { origin: baseUrl, launchUrl } = await ready
     const url = new URL(baseUrl)
+    let authenticatedFetch
+    try {
+      authenticatedFetch = await authenticateDshWeb(fetch, launchUrl)
+    } catch {
+      throw new WebE2eFailure('DSH_WEB_AUTH_FAILED', 'DSH Web rejected its launch token')
+    }
     return {
       child,
       baseUrl,
+      launchUrl,
+      fetch: authenticatedFetch,
       port: Number(url.port),
       pid: child.pid,
       output: () => output,
@@ -321,28 +330,42 @@ async function stopWeb(instance) {
   }
 }
 
-async function history(baseUrl, sessionId) {
-  return dshRpc(fetch, baseUrl, 'session.history', { sessionId, maxMessages: 100 })
+/** Call one DSH Remote unary method whose Host method takes a single `request` parameter. */
+function rpc(server, method, request) {
+  return dshRpc(server.fetch, server.baseUrl, method, request === undefined ? {} : { request })
 }
 
-async function waitForHistory(baseUrl, sessionId, predicate, label) {
+/** Read the latest history page through the Session's current log cursor. */
+async function history(server, sessionId) {
+  const projections = await rpc(server, 'session/projections', { sessionId })
+  if (projections === null) {
+    throw new WebE2eFailure('SESSION_MISSING', 'session/projections found no Session')
+  }
+  return rpc(server, 'session/page', {
+    address: { kind: 'session', sessionId },
+    throughSeq: projections.asOfSeq,
+    maxMessages: 100,
+  })
+}
+
+async function waitForHistory(server, sessionId, predicate, label) {
   return waitFor(async () => {
-    const page = await history(baseUrl, sessionId)
+    const page = await history(server, sessionId)
     return predicate(page) ? page : false
   }, label)
 }
 
-async function waitForTurnCount(baseUrl, sessionId, count) {
+async function waitForTurnCount(server, sessionId, count) {
   return waitForHistory(
-    baseUrl,
+    server,
     sessionId,
     (page) => summarizeHistory(page).turnEndKinds.length >= count,
     `${String(count)} settled turns`,
   )
 }
 
-async function waitForSettledTurn(baseUrl, sessionId, previousTurnCount, label) {
-  return waitForTurnCount(baseUrl, sessionId, previousTurnCount + 1).catch((error) => {
+async function waitForSettledTurn(server, sessionId, previousTurnCount, label) {
+  return waitForTurnCount(server, sessionId, previousTurnCount + 1).catch((error) => {
     if (error instanceof WebE2eFailure && error.code === 'POLL_TIMEOUT') {
       throw new WebE2eFailure('TURN_SETTLE_TIMEOUT', `timed out waiting for ${label}`)
     }
@@ -357,30 +380,45 @@ function requireNewAssistantMarker(page, marker, previousCount, code, summary, e
 }
 
 async function acknowledgeWelcome(page) {
-  const welcome = page.getByRole('dialog', { name: 'Internal Testing Notice' })
+  const welcome = page.getByRole('dialog', { name: 'Preview Notice' })
   if ((await welcome.count()) === 0) return false
   await welcome.getByRole('button', { name: 'Continue' }).click()
   await welcome.waitFor({ state: 'detached', timeout: 10_000 })
   return true
 }
 
+/** DSH 0.2 starts in its default workspace, so add the isolated one from the sidebar. */
 async function connectWorkspace(page, workspace) {
-  const chooser = page.getByRole('textbox', { name: 'Choose workspace' })
-  await chooser.waitFor({ timeout: 30_000 })
-  await chooser.click()
+  await page.getByRole('button', { name: 'Add workspace' }).click()
   const dialog = page.getByRole('dialog', { name: 'Select Workspace Directory' })
   await dialog.waitFor({ timeout: 10_000 })
   await dialog.getByRole('button', { name: 'Edit path' }).click()
   const pathInput = dialog.getByRole('textbox', { name: 'Edit path' })
   await pathInput.fill(workspace)
-  await pathInput.press('Enter')
+  await page.keyboard.press('Enter')
+  await pathInput.waitFor({ state: 'detached', timeout: 10_000 })
   await dialog.getByRole('button', { name: 'Open', exact: true }).click()
-  await page
-    .locator('textarea:enabled[placeholder="Describe what you want to build"]')
-    .waitFor({ timeout: 30_000 })
+  await dialog.waitFor({ state: 'detached', timeout: 10_000 })
+  await page.locator('[data-composer-input][contenteditable="true"]').first().waitFor({
+    timeout: 30_000,
+  })
 }
 
-async function openBrowser(baseUrl, workspace, connectFresh) {
+/**
+ * DSH 0.2 answers 404 for an application without an extractable icon and
+ * renders a generic glyph; Chromium still logs that response as a console error.
+ */
+function documentedIconMiss(entry) {
+  const location = entry.location().url
+  return (
+    entry.text().startsWith('Failed to load resource: the server responded with a status of 404') &&
+    location !== undefined &&
+    location.length > 0 &&
+    new URL(location).pathname.startsWith('/open-in-app/icon/')
+  )
+}
+
+async function openBrowser(launchUrl, workspace, connectFresh) {
   const browser = await chromium.launch({ headless: !headed })
   let complete = false
   try {
@@ -392,7 +430,8 @@ async function openBrowser(baseUrl, workspace, connectFresh) {
     const consoleErrors = []
     page.on('pageerror', () => pageErrors.push('pageerror'))
     page.on('console', (entry) => {
-      if (entry.type() === 'error') consoleErrors.push('console-error')
+      if (entry.type() === 'error' && !documentedIconMiss(entry))
+        consoleErrors.push('console-error')
     })
     const assertClean = () => {
       if (pageErrors.length > 0 || consoleErrors.length > 0) {
@@ -400,7 +439,7 @@ async function openBrowser(baseUrl, workspace, connectFresh) {
       }
       return { pageErrors: pageErrors.length, consoleErrors: consoleErrors.length }
     }
-    await page.goto(baseUrl, { waitUntil: 'load' })
+    await page.goto(launchUrl, { waitUntil: 'load' })
     const frame = page.locator('[class*="frame"]')
     await frame.waitFor({ timeout: 30_000 })
     const frameColumns = await frame.evaluate(
@@ -426,7 +465,10 @@ async function openBrowser(baseUrl, workspace, connectFresh) {
     const menu = page.getByRole('menu', { name: 'Model and reasoning effort' })
     await menu.waitFor({ timeout: 10_000 })
     await menu.getByRole('menuitem', { name: /^Model/u }).click()
-    const provider = menu.getByRole('group', { name: 'Claude Code' })
+    // DSH 0.2 renders the model list as a separate submenu.
+    const provider = page
+      .getByRole('menu', { name: 'Model', exact: true })
+      .getByRole('group', { name: 'Claude Code' })
     await provider.waitFor({ timeout: 10_000 })
     const names = await provider.getByRole('menuitemradio').allTextContents()
     const expectedNames = [
@@ -652,19 +694,17 @@ try {
   })
 
   await scenario('plugin.doctor', async () => {
+    // DSH 0.2 resolves DSH packages only inside its launcher, so `dsh plugin
+    // exec` cannot load the doctor; the checkout build runs it instead.
     const doctorArgs = [
-      'plugin',
-      '--profile',
-      'web',
-      'exec',
-      'dsh-claude-plugin',
+      join(repository, 'lib', 'cli.js'),
       'doctor',
       '--policy',
       mode === 'live' ? 'host-only' : 'bundled-only',
       mode === 'live' ? '--live' : '--no-live',
       '--json',
     ]
-    const result = commandResult(dshBin, doctorArgs, repository, environment)
+    const result = commandResult(process.execPath, doctorArgs, repository, environment)
     let doctor
     try {
       doctor = JSON.parse(result.stdout)
@@ -703,7 +743,7 @@ try {
   })
 
   await scenario('web.http', async () => {
-    const response = await fetch(server.baseUrl)
+    const response = await server.fetch(server.baseUrl)
     const html = await response.text()
     if (!response.ok || !html.includes('<!doctype html>')) {
       throw new WebE2eFailure(
@@ -720,11 +760,9 @@ try {
 
   if (useBrowser) {
     await scenario('web.browser-model-menu', async () => {
-      browserState = await openBrowser(server.baseUrl, workspace, true)
-      const workspaces = await dshRpc(fetch, server.baseUrl, 'workspace.list', {})
-      const matched = workspaces.items?.find(
-        (entry) => basename(entry.path) === basename(workspace),
-      )
+      browserState = await openBrowser(server.launchUrl, workspace, true)
+      // workspace/create returns the Workspace the browser already registered.
+      const matched = (await rpc(server, 'workspace/create', { path: workspace })).workspace
       if (matched === undefined || typeof matched.workspaceId !== 'string') {
         throw new WebE2eFailure(
           'BROWSER_WORKSPACE_MISSING',
@@ -740,22 +778,26 @@ try {
     })
   } else {
     await scenario('web.rpc-bootstrap', async () => {
-      const createdWorkspace = await dshRpc(fetch, server.baseUrl, 'workspace.create', {
-        path: workspace,
-      })
+      const createdWorkspace = await rpc(server, 'workspace/create', { path: workspace })
       workspaceId = createdWorkspace.workspace.workspaceId
-      const created = await dshRpc(fetch, server.baseUrl, 'session.create', { workspaceId })
+      const created = await rpc(server, 'session/create', { workspaceId })
       sessionId = created.sessionId
       return { workspaceCreated: createdWorkspace.created, sessionCreated: true }
     })
   }
 
   await scenario('web.rpc-model-discovery', async () => {
-    const sessionModels = await dshRpc(fetch, server.baseUrl, 'session.models', { sessionId })
-    const evidence = inspectClaudeCatalog(sessionModels)
-    const providers = await dshRpc(fetch, server.baseUrl, 'llm.providers', {})
-    const route = providers.providers?.find((entry) => entry.provider === 'claude-code')
-    if (route?.active !== true || route.settingsNs !== '') {
+    const evidence = inspectClaudeCatalog(await rpc(server, 'session/modelCatalog'))
+    const providers = await dshRpc(server.fetch, server.baseUrl, 'llm/listProviders', {})
+    const configurable = await dshRpc(
+      server.fetch,
+      server.baseUrl,
+      'llm/listConfigurableProviders',
+      {},
+    )
+    const active = providers.some((entry) => entry.id === 'claude-code')
+    const needsSettings = configurable.some((entry) => entry.provider === 'claude-code')
+    if (!active || needsSettings) {
       throw new WebE2eFailure('CLAUDE_ROUTE_TOPOLOGY_INVALID', 'Claude route is not active/keyless')
     }
     return { ...evidence, onboardingCredentialRequired: false }
@@ -764,7 +806,7 @@ try {
   await scenario('web.rpc-invalid-reasoning', async () => {
     let observed
     try {
-      await dshRpc(fetch, server.baseUrl, 'session.selectModel', {
+      await rpc(server, 'session/selectModel', {
         sessionId,
         provider: 'claude-code',
         model: 'default',
@@ -773,22 +815,23 @@ try {
     } catch (error) {
       observed = error
     }
-    if (!(observed instanceof DshRpcError) || observed.code !== 'model-unavailable') {
+    if (!(observed instanceof DshRpcError) || observed.code !== 'session/model-unavailable') {
       throw new WebE2eFailure('MODEL_ERROR_BOUNDARY_MISSING', 'invalid reasoning was accepted')
     }
     return { rejected: true, rpcCode: observed.code }
   })
 
-  await dshRpc(fetch, server.baseUrl, 'session.rename', { sessionId, title: TITLE })
+  await rpc(server, 'session/rename', { sessionId, title: TITLE })
 
   let memoryMarker
   if (mode === 'live') {
     await scenario('live.text', async () => {
-      const before = await history(server.baseUrl, sessionId)
+      const before = await history(server, sessionId)
       const beforeSummary = summarizeHistory(before)
       const browserRows = browserState?.page.locator('[data-chat-flow-kind="assistant-step"]')
       const beforeBrowserRows = await browserRows?.count()
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId,
         mode: 'queue',
         content: [
@@ -799,7 +842,7 @@ try {
         ],
       })
       const page = await waitForSettledTurn(
-        server.baseUrl,
+        server,
         sessionId,
         beforeSummary.turnEndKinds.length,
         'the text response to settle',
@@ -828,8 +871,9 @@ try {
 
     memoryMarker = `cedar-lantern-${createHash('sha256').update(crypto.randomUUID()).digest('hex').slice(0, 8)}`
     await scenario('live.multi-turn', async () => {
-      const before = await history(server.baseUrl, sessionId)
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      const before = await history(server, sessionId)
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId,
         mode: 'queue',
         content: [
@@ -840,14 +884,15 @@ try {
         ],
       })
       const acknowledged = await waitForSettledTurn(
-        server.baseUrl,
+        server,
         sessionId,
         summarizeHistory(before).turnEndKinds.length,
         'the memory acknowledgement to settle',
       )
       const beforeRecallSummary = summarizeHistory(acknowledged)
       const beforeRecallMarkers = historyAssistantMarkerCount(acknowledged, memoryMarker)
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId,
         mode: 'queue',
         content: [
@@ -858,7 +903,7 @@ try {
         ],
       })
       const page = await waitForSettledTurn(
-        server.baseUrl,
+        server,
         sessionId,
         beforeRecallSummary.turnEndKinds.length,
         'the memory recall to settle',
@@ -876,9 +921,10 @@ try {
 
     const toolMarker = '314159'
     await scenario('live.tool', async () => {
-      const before = await history(server.baseUrl, sessionId)
+      const before = await history(server, sessionId)
       const beforeSummary = summarizeHistory(before)
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId,
         mode: 'queue',
         content: [
@@ -889,7 +935,7 @@ try {
         ],
       })
       const page = await waitForSettledTurn(
-        server.baseUrl,
+        server,
         sessionId,
         beforeSummary.turnEndKinds.length,
         'the correlated bash round trip to settle',
@@ -914,17 +960,26 @@ try {
           summary,
         )
       }
-      await browserState?.page.locator('[data-sample="bash"]').last().waitFor({ timeout: 30_000 })
+      // DSH 0.2 folds settled tool cards into a collapsed process-activity group.
+      const toolCard = browserState?.page.locator('[data-sample="bash"]').last()
+      await toolCard?.waitFor({ state: 'attached', timeout: 30_000 })
+      if (toolCard !== undefined && (await toolCard.getAttribute('data-state')) !== 'ok') {
+        throw new WebE2eFailure(
+          'BROWSER_TOOL_CARD_INVALID',
+          'WebUI did not render a settled bash card',
+        )
+      }
       browserState?.assertClean()
       return summary
     })
 
     await scenario('live.cancellation', async () => {
-      const created = await dshRpc(fetch, server.baseUrl, 'session.create', { workspaceId })
+      const created = await rpc(server, 'session/create', { workspaceId })
       const cancellationId = created.sessionId
-      const before = await history(server.baseUrl, cancellationId)
+      const before = await history(server, cancellationId)
       const beforeTurns = summarizeHistory(before).turnEndKinds.length
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId: cancellationId,
         mode: 'queue',
         content: [
@@ -935,7 +990,7 @@ try {
         ],
       })
       const started = await waitForHistory(
-        server.baseUrl,
+        server,
         cancellationId,
         (value) => {
           const summary = summarizeHistory(value)
@@ -949,9 +1004,9 @@ try {
           'cancellation test settled before issuing bash',
         )
       }
-      await dshRpc(fetch, server.baseUrl, 'session.cancel', { sessionId: cancellationId })
+      await rpc(server, 'session/cancel', { sessionId: cancellationId })
       const page = await waitForHistory(
-        server.baseUrl,
+        server,
         cancellationId,
         (value) => {
           const kinds = summarizeHistory(value).turnEndKinds
@@ -976,13 +1031,14 @@ try {
         throw new WebE2eFailure('CHILD_PROCESS_LEAK', 'Claude child survived DSH restart boundary')
       }
       server = await startWeb(dshBin, workspace, environment, pickerOverlay)
-      const before = await history(server.baseUrl, sessionId)
+      const before = await history(server, sessionId)
       if (!historyHasAssistantMarker(before, memoryMarker)) {
         throw new WebE2eFailure('RESTART_HISTORY_MISSING', 'history marker was not durable')
       }
       const beforeSummary = summarizeHistory(before)
       const beforeRestartMarkers = historyAssistantMarkerCount(before, memoryMarker)
-      await dshRpc(fetch, server.baseUrl, 'session.prompt', {
+      await rpc(server, 'session/prompt', {
+        requestId: randomUUID(),
         sessionId,
         mode: 'queue',
         content: [
@@ -993,7 +1049,7 @@ try {
         ],
       })
       const after = await waitForSettledTurn(
-        server.baseUrl,
+        server,
         sessionId,
         beforeSummary.turnEndKinds.length,
         'the post-restart continuity response to settle',
@@ -1007,7 +1063,7 @@ try {
         summarizeHistory(after),
       )
       if (useBrowser) {
-        browserState = await openBrowser(server.baseUrl, workspace, false)
+        browserState = await openBrowser(server.launchUrl, workspace, false)
         await selectSessionInBrowser(browserState.page, TITLE)
         await browserState.page.getByText(memoryMarker, { exact: false }).last().waitFor({
           timeout: 30_000,

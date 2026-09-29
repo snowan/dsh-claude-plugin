@@ -11,6 +11,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { SENSITIVE_ENV_PATTERN } from '@deepseek-ai/dsh-subprocess'
 import { BridgeManager, defaultQueryFactory } from './bridge.js'
+import { claudeGenerateOptions } from './request.js'
 import { ClaudeDiagnostics } from './diagnostics.js'
 import {
   abortError,
@@ -38,6 +39,7 @@ export * from './input.js'
 export * from './output.js'
 export * from './process.js'
 export * from './replay.js'
+export * from './request.js'
 export * from './pending-tools.js'
 export * from './tool-server.js'
 export * from './usage.js'
@@ -202,7 +204,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     const model = resolveClaudeModel(options.model, this.config.defaultModel)
     let finished = false
     try {
-      for await (const chunk of this.bridges.stream(options, model)) {
+      for await (const chunk of this.bridges.stream(claudeGenerateOptions(options), model)) {
         if (chunk.type === 'finish') finished = true
         yield chunk
       }

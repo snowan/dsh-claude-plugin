@@ -8,7 +8,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type SubprocessRuntime from '@deepseek-ai/dsh-subprocess'
-import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ResolvedConfig } from './index.js'
 import { AsyncQueue } from './async-queue.js'
 import { type AttachmentReader, ClaudeContentEncoder } from './content.js'
@@ -23,6 +23,7 @@ import {
 import { ClaudeOutputTranslator } from './output.js'
 import { ClaudeProcessFactory, resolveClaudeExecutable, sdkEnvironment } from './process.js'
 import { createReplayEnvelope } from './replay.js'
+import type { ClaudeGenerateOptions } from './request.js'
 import { resolveClaudeEffort } from './models.js'
 import { DSH_MCP_SERVER_NAME, DshToolServer } from './tool-server.js'
 import { UsageTracker, type UsageSnapshot, type UsageTelemetryDelta } from './usage.js'
@@ -189,7 +190,7 @@ class SessionBridge {
   }
 
   async *stream(
-    options: GenerateOptions,
+    options: ClaudeGenerateOptions,
     model: string,
     control: PrepareStepOptions = {},
   ): AsyncIterable<StreamChunk> {
@@ -322,7 +323,7 @@ function retryableBeforeObservation(error: unknown): boolean {
   return !(error instanceof ClaudePluginError) || error.code === 'CLAUDE_TRANSPORT_ERROR'
 }
 
-function bridgeKey(options: GenerateOptions): string | undefined {
+function bridgeKey(options: ClaudeGenerateOptions): string | undefined {
   if (options.sessionId === undefined) return undefined
   return `${String(options.sessionId)}\u0000${options.purpose ?? 'conversation'}`
 }
@@ -399,7 +400,7 @@ export class BridgeManager {
     await bridge.dispose()
   }
 
-  async *stream(options: GenerateOptions, model: string): AsyncIterable<StreamChunk> {
+  async *stream(options: ClaudeGenerateOptions, model: string): AsyncIterable<StreamChunk> {
     if (this.#disposed) throw transportError('Claude bridge manager is disposed')
     if (this.#evictionFailure !== undefined) {
       throw transportError('Claude idle bridge cleanup failed', this.#evictionFailure)

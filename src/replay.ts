@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { Buffer } from 'node:buffer'
-import type { ContentBlock, Message, ReplayEnvelope } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ReplayEnvelope } from '@deepseek-ai/dsh-llm'
 import type { UsageSnapshot } from './usage.js'
 import { coldReplayUnsupported, inFlightRecoveryUnsupported } from './errors.js'
 import { canonicalToolJson } from './pending-tools.js'
+import type { ConversationMessage } from './request.js'
 
 export const CLAUDE_REPLAY_KIND = 'dsh-claude-plugin/replay'
 export const CLAUDE_REPLAY_VERSION = 1
@@ -41,10 +42,10 @@ export interface ClaudeReplayStateV1 {
 }
 
 export type ColdStartPlan =
-  | { readonly mode: 'fresh'; readonly pending: readonly Message[] }
+  | { readonly mode: 'fresh'; readonly pending: readonly ConversationMessage[] }
   | {
       readonly mode: 'exact'
-      readonly pending: readonly Message[]
+      readonly pending: readonly ConversationMessage[]
       readonly resume: string
       readonly resumeSessionAt: string
       readonly forkSession: true
@@ -62,8 +63,9 @@ function record(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function projectedSource(message: Message): unknown {
+function projectedSource(message: ConversationMessage): unknown {
   const source = message.source
+  if (source === undefined) return { kind: 'request' }
   if (source.kind === 'model') {
     return { kind: 'model', provider: source.provider, model: source.model }
   }
@@ -86,13 +88,6 @@ function projectedBlock(block: ContentBlock, options: ReplayProjectionOptions): 
         name: block.name,
         arguments: block.arguments,
       }
-    case 'tool-result':
-      return {
-        type: 'tool-result',
-        toolCallId: String(block.toolCallId),
-        content: block.content.map((entry) => projectedBlock(entry, options)),
-        ...(block.isError === undefined ? {} : { isError: block.isError }),
-      }
     case 'image':
       return {
         type: 'image',
@@ -112,15 +107,36 @@ function projectedBlock(block: ContentBlock, options: ReplayProjectionOptions): 
   }
 }
 
+function projectedContent(
+  message: ConversationMessage,
+  options: ReplayProjectionOptions,
+): unknown[] {
+  const content = message.content.map((block) => projectedBlock(block, options))
+  if (message.role !== 'tool') return content
+  return [
+    {
+      type: 'tool-result',
+      toolCallId: String(message.toolCallId),
+      content,
+      ...(message.isError === undefined ? {} : { isError: message.isError }),
+    },
+  ]
+}
+
+/**
+ * Tool results keep the replay-v1 layout, a user-role message holding one
+ * `tool-result` block, so fingerprints recorded before DSH 0.2 moved tool
+ * results into tool-role messages still match the migrated history.
+ */
 function projectedMessages(
-  messages: readonly Message[],
+  messages: readonly ConversationMessage[],
   options: ReplayProjectionOptions,
 ): unknown[] {
   return messages.map((message) => ({
-    id: String(message.id),
-    role: message.role,
+    ...(message.id === undefined ? {} : { id: String(message.id) }),
+    role: message.role === 'tool' ? 'user' : message.role,
     source: projectedSource(message),
-    content: message.content.map((block) => projectedBlock(block, options)),
+    content: projectedContent(message, options),
   }))
 }
 
@@ -136,7 +152,7 @@ function digest(value: unknown, context: string): string {
   return createHash('sha256').update(canonical(value, context), 'utf8').digest('hex')
 }
 
-export function messageFingerprint(messages: readonly Message[]): string {
+export function messageFingerprint(messages: readonly ConversationMessage[]): string {
   return digest(
     projectedMessages(messages, { omitReasoning: false }),
     'DSH replay message projection',
@@ -199,7 +215,7 @@ function decodedReplayState(value: unknown): ClaudeReplayStateV1 | undefined {
 }
 
 export interface CreateReplayStateOptions {
-  readonly messages: readonly Message[]
+  readonly messages: readonly ConversationMessage[]
   readonly assistant: readonly ContentBlock[]
   readonly phase: ReplayPhase
   readonly sessionId: string | undefined
@@ -250,7 +266,7 @@ export function createReplayEnvelope(
   return Object.freeze({ response })
 }
 
-export function degradedReplayText(messages: readonly Message[]): string {
+export function degradedReplayText(messages: readonly ConversationMessage[]): string {
   const body = canonical(
     {
       mode: 'degraded',
@@ -269,7 +285,7 @@ export function degradedReplayText(messages: readonly Message[]): string {
   return text
 }
 
-function lastAssistantIndex(messages: readonly Message[]): number {
+function lastAssistantIndex(messages: readonly ConversationMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === 'assistant') return index
   }
@@ -277,7 +293,7 @@ function lastAssistantIndex(messages: readonly Message[]): number {
 }
 
 export function planColdStart(
-  messages: readonly Message[],
+  messages: readonly ConversationMessage[],
   system: string | undefined,
   cwd: string,
   forceDegraded = false,
@@ -314,7 +330,7 @@ export function planColdStart(
       if (
         !forceDegraded &&
         pending.length > 0 &&
-        pending.every((message) => message.role === 'user' && message.source.kind !== 'tool')
+        pending.every((message) => message.role === 'user')
       ) {
         return {
           mode: 'exact',

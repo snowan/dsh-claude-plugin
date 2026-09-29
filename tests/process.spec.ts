@@ -26,10 +26,10 @@ function deferred<T>() {
 function handleFixture() {
   const done = deferred<{ exitCode: number | null; signal: NodeJS.Signals | null }>()
   const handle: SubprocessHandle = {
-    pid: 123,
     stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr: undefined,
+    control: undefined,
     collected: {
       stderr: {
         readFrom: () => ({ text: '', nextOffset: 0, lossy: false }),

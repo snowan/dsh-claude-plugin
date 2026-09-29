@@ -207,15 +207,10 @@ function assistantTool(replayState?: unknown): Message {
 function toolResult(): Message {
   return {
     id: 'r1' as never,
-    role: 'user',
-    content: [
-      {
-        type: 'tool-result',
-        toolCallId: 'toolu_read_1' as never,
-        content: [{ type: 'text', text: 'fixture-value' }],
-        isError: false,
-      },
-    ],
+    role: 'tool',
+    toolCallId: 'toolu_read_1' as never,
+    content: [{ type: 'text', text: 'fixture-value' }],
+    isError: false,
     source: { kind: 'tool', callId: 'toolu_read_1' as never },
   }
 }
@@ -233,14 +228,21 @@ const tools: ToolSchema[] = [
   },
 ]
 
+const systemMessage: Message = {
+  id: 'system' as never,
+  role: 'system',
+  content: [{ type: 'text', text: 'Use only DSH tools.' }],
+  source: { kind: 'system-prompt' },
+}
+
+/** A DSH agent-loop request: the system prompt leads the derived history. */
 function request(messages: Message[], signal?: AbortSignal): GenerateOptions {
   return {
     provider: 'claude-code',
     model: 'default',
-    messages,
+    messages: [systemMessage, ...messages],
     tools,
     sessionId: 'tool-session' as never,
-    system: 'Use only DSH tools.',
     ...(signal === undefined ? {} : { signal }),
   }
 }

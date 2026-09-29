@@ -1,6 +1,6 @@
 # Install, verify, select, and remove
 
-This guide targets `@deepseek-ai/dsh@0.1.1-rc.2` and
+This guide targets `@deepseek-ai/dsh@0.2.0-rc.2` and
 `dsh-claude-plugin@0.1.0`. DSH is in developer preview, so do not assume an
 unpinned future DSH release has the same profile contract.
 
@@ -14,7 +14,7 @@ unpinned future DSH release has the same profile contract.
 Install or invoke the supported DSH release with npm:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --version
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --version
 ```
 
 ## Verify a checkout before installation
@@ -60,7 +60,7 @@ retain the temporary fixture for diagnosis.
 Capture a boot-free baseline before changing the profile:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config > /tmp/dsh-before.yml
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config > /tmp/dsh-before.yml
 ```
 
 For a local checkout, build a transportable tarball and install that artifact:
@@ -69,7 +69,7 @@ For a local checkout, build a transportable tarball and install that artifact:
 npm ci
 npm run check
 npm pack
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web add "$(pwd)/dsh-claude-plugin-0.1.0.tgz"
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add "$(pwd)/dsh-claude-plugin-0.1.0.tgz"
 ```
 
 Once the package is published, replace the tarball path with the exact package
@@ -78,8 +78,8 @@ version. Do not install from an unpinned moving branch for a production profile.
 Capture and verify the installed tree:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config > /tmp/dsh-installed.yml
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web exec dsh-claude-plugin verify-profile \
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config > /tmp/dsh-installed.yml
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web exec dsh-claude-plugin verify-profile \
   --before /tmp/dsh-before.yml \
   --installed /tmp/dsh-installed.yml
 ```
@@ -94,11 +94,14 @@ Every security, approval, sandbox, tool, session, storage, UI, and unrelated
 model row may be formatted differently but must remain semantically identical
 and in the same order.
 
-Run the doctor from the installed profile so it resolves the installed package
-and peers:
+Run the live doctor from the verified checkout. DSH 0.2 resolves its own
+packages only inside the `dsh` launcher, so `dsh plugin exec` runs the installed
+CLI under plain Node: `verify-profile` works there, but `doctor`, which imports
+the DSH packages it probes, reports that it must run from a checkout. The
+checkout pins the same Agent SDK as the installed package:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web exec dsh-claude-plugin doctor --policy host-only --live
+node lib/cli.js doctor --policy host-only --live
 ```
 
 ## Start and select Claude in WebUI
@@ -107,7 +110,7 @@ Stop any older process already listening on the chosen port, then start the
 exact pinned DSH command from the intended workspace:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 web --port 3080 --no-open
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 web --port 3080 --no-open
 ```
 
 Open `http://127.0.0.1:3080`, create a Standard agent, and confirm its selected
@@ -125,8 +128,8 @@ Remove the package from the same profile, dump the tree, and compare it with the
 captured baseline:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web remove dsh-claude-plugin
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config > /tmp/dsh-removed.yml
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web remove dsh-claude-plugin
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config > /tmp/dsh-removed.yml
 node lib/cli.js verify-profile \
   --before /tmp/dsh-before.yml \
   --installed /tmp/dsh-installed.yml \

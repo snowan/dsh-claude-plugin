@@ -35,7 +35,7 @@ jobs:
       - run: npm run check
 
   profile-e2e:
-    name: DSH 0.1.1-rc.2 profile install/remove
+    name: DSH 0.2.0-rc.2 profile install/remove
     runs-on: ubuntu-latest
     steps:
       - name: Check out exact head
@@ -52,7 +52,7 @@ jobs:
       - run: npm run test:profile
 
   web-e2e:
-    name: DSH 0.1.1-rc.2 WebUI keyless E2E
+    name: DSH 0.2.0-rc.2 WebUI keyless E2E
     runs-on: ubuntu-latest
     steps:
       - name: Check out exact head

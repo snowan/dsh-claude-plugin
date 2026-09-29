@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Logger } from '@deepseek-ai/cordis'
-import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { ClaudePluginError } from './errors.js'
+import type { ClaudeGenerateOptions } from './request.js'
 import type { UsageSnapshot, UsageTelemetryDelta } from './usage.js'
 
 export const MAX_DIAGNOSTIC_BYTES = 4 * 1_024
@@ -18,19 +18,13 @@ function bounded(value: string, max = 256): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`
 }
 
-function requestCounts(options: GenerateOptions) {
+function requestCounts(options: ClaudeGenerateOptions) {
   let textCharacters = 0
   let imageCount = 0
   for (const message of options.messages) {
     for (const block of message.content) {
       if (block.type === 'text') textCharacters += block.text.length
       else if (block.type === 'image') imageCount += 1
-      else if (block.type === 'tool-result') {
-        for (const result of block.content) {
-          if (result.type === 'text') textCharacters += result.text.length
-          else if (result.type === 'image') imageCount += 1
-        }
-      }
     }
   }
   return { textCharacters, imageCount }
@@ -44,7 +38,7 @@ export class GenerationDiagnostics {
 
   constructor(
     readonly owner: ClaudeDiagnostics,
-    options: GenerateOptions,
+    options: ClaudeGenerateOptions,
     model: string,
   ) {
     const counts = requestCounts(options)
@@ -133,7 +127,7 @@ export class ClaudeDiagnostics {
     readonly logger?: DiagnosticLogger,
   ) {}
 
-  begin(options: GenerateOptions, model: string): GenerationDiagnostics {
+  begin(options: ClaudeGenerateOptions, model: string): GenerationDiagnostics {
     return new GenerationDiagnostics(this, options, model)
   }
 

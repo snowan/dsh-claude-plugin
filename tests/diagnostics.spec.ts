@@ -1,8 +1,9 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
-import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { ClaudeDiagnostics, MAX_DIAGNOSTIC_BYTES } from '../src/diagnostics.js'
 import { toolProtocolError } from '../src/errors.js'
+import { claudeGenerateOptions, type ClaudeGenerateOptions } from '../src/request.js'
 
 const promptSecret = 'PROMPT_SECRET_9f2f'
 const systemSecret = 'SYSTEM_SECRET_71aa'
@@ -11,25 +12,25 @@ const sessionSecret = 'SESSION_SECRET_88de'
 const credentialSecret = 'sk-ant-fixture-credential-55c1'
 const environmentSecret = 'ENVIRONMENT_SECRET_a04d'
 
-function options(): GenerateOptions {
-  const result: Message = {
+function options(): ClaudeGenerateOptions {
+  const result: ToolResultMessage = {
     id: 'tool-result' as never,
-    role: 'user',
+    role: 'tool',
     source: { kind: 'tool', callId: 'toolu_1' as never },
-    content: [
-      {
-        type: 'tool-result',
-        toolCallId: 'toolu_1' as never,
-        content: [{ type: 'text', text: toolSecret }],
-      },
-    ],
+    toolCallId: 'toolu_1' as never,
+    content: [{ type: 'text', text: toolSecret }],
   }
-  return {
+  return claudeGenerateOptions({
     provider: 'claude-code',
     model: 'sonnet',
     sessionId: sessionSecret as never,
-    system: systemSecret,
     messages: [
+      {
+        id: 'system' as never,
+        role: 'system',
+        source: { kind: 'system-prompt' },
+        content: [{ type: 'text', text: systemSecret }],
+      },
       {
         id: 'user' as never,
         role: 'user',
@@ -45,7 +46,7 @@ function options(): GenerateOptions {
         parameters: { type: 'object', secret: toolSecret },
       },
     ],
-  }
+  })
 }
 
 describe('redacted Claude diagnostics', () => {

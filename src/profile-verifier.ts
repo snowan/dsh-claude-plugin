@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { parseDocument } from 'yaml'
-import { canonicalToolJson } from './json.js'
+import { canonicalJson } from './canonical-json.js'
 
 export const PROFILE_VERIFIER_SCHEMA_VERSION = 1
 export const MAX_PROFILE_DUMP_BYTES = 8 * 1_024 * 1_024
@@ -81,7 +81,8 @@ function byId(rows: readonly ConfigRow[]): ReadonlyMap<string, ConfigRow> {
 
 function equal(left: unknown, right: unknown): boolean {
   try {
-    return canonicalToolJson(left) === canonicalToolJson(right)
+    const invalid = (message: string) => new Error(message)
+    return canonicalJson(left, invalid) === canonicalJson(right, invalid)
   } catch {
     return false
   }

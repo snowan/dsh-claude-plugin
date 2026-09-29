@@ -1,11 +1,18 @@
 import { Buffer } from 'node:buffer'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type AttachmentStore from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
-import type { ContentBlock, Message, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import {
+  longEdgeDimensions,
+  requestImageDimensions,
+  type ImageAttachmentRef,
+  type ImageMediaType,
+  type ImageRequestTarget,
+} from '@deepseek-ai/dsh-attachment'
+import type { ContentBlock, ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { toolProtocolError, unsupportedInput } from './errors.js'
 import { canonicalToolJson } from './json.js'
+import type { ConversationMessage } from './request.js'
 
 export const CLAUDE_MAX_IMAGES_PER_REQUEST = 20
 export const CLAUDE_MAX_IMAGE_DIMENSION = 8_000
@@ -42,9 +49,29 @@ function imageRefs(blocks: readonly ContentBlock[]): ImageAttachmentRef[] {
   const images: ImageAttachmentRef[] = []
   for (const block of blocks) {
     if (block.type === 'image') images.push(block.attachment)
-    else if (block.type === 'tool-result') images.push(...imageRefs(block.content))
   }
   return images
+}
+
+function messageLabel(message: ConversationMessage): string {
+  return message.id === undefined
+    ? 'request user input'
+    : `message ${JSON.stringify(String(message.id))}`
+}
+
+/** Fit one image inside Claude's pixel and per-edge bounds without enlarging it. */
+export function claudeImageTarget(
+  ref: ImageAttachmentRef,
+  maxPixels: number,
+  maxBytes: number,
+): ImageRequestTarget {
+  const fitted = requestImageDimensions(ref.width, ref.height, maxPixels)
+  const { width, height } = longEdgeDimensions(
+    fitted.width,
+    fitted.height,
+    CLAUDE_MAX_IMAGE_DIMENSION,
+  )
+  return { width, height, maxBytes }
 }
 
 function extensionResource(block: Readonly<Record<string, unknown>>): unknown {
@@ -103,14 +130,14 @@ export class ClaudeContentEncoder {
     }
   }
 
-  assertMessages(messages: readonly Message[], context = 'Claude request'): void {
+  assertMessages(messages: readonly ConversationMessage[], context = 'Claude request'): void {
     this.#assertBatch(
       messages.flatMap((message) => imageRefs(message.content)),
       context,
     )
   }
 
-  assertToolResults(results: readonly ToolResultBlock[]): void {
+  assertToolResults(results: readonly ToolResultMessage[]): void {
     this.#assertBatch(
       results.flatMap((result) => imageRefs(result.content)),
       'DSH tool-result batch',
@@ -126,10 +153,11 @@ export class ClaudeContentEncoder {
     }
     const request = await attachments.readImageRequest(
       ref,
-      {
-        maxPixels: Math.min(CLAUDE_MAX_IMAGE_PIXELS, attachments.imageLimits.maxImagePixels),
-        maxBytes: Math.min(CLAUDE_MAX_ENCODED_IMAGE_BYTES, attachments.imageLimits.maxImageBytes),
-      },
+      claudeImageTarget(
+        ref,
+        Math.min(CLAUDE_MAX_IMAGE_PIXELS, attachments.imageLimits.maxImagePixels),
+        Math.min(CLAUDE_MAX_ENCODED_IMAGE_BYTES, attachments.imageLimits.maxImageBytes),
+      ),
       signal,
     )
     if (
@@ -165,11 +193,12 @@ export class ClaudeContentEncoder {
     }
   }
 
-  async userMessage(message: Message, signal?: AbortSignal): Promise<SDKUserMessage> {
-    if (message.role !== 'user' || message.source.kind === 'tool') {
-      throw unsupportedInput('only non-tool user messages can enter the live Claude prompt stream')
+  async userMessage(message: ConversationMessage, signal?: AbortSignal): Promise<SDKUserMessage> {
+    if (message.role !== 'user') {
+      throw unsupportedInput('only user messages can enter the live Claude prompt stream')
     }
-    this.#assertBatch(imageRefs(message.content), `message ${JSON.stringify(String(message.id))}`)
+    const label = messageLabel(message)
+    this.#assertBatch(imageRefs(message.content), label)
     const content: SdkUserContentBlock[] = []
     for (const block of message.content) {
       if (block.type === 'text') content.push({ type: 'text', text: block.text })
@@ -177,12 +206,12 @@ export class ClaudeContentEncoder {
         content.push((await this.#image(block.attachment, signal)).sdk)
       else {
         throw unsupportedInput(
-          `message ${JSON.stringify(String(message.id))} contains unsupported ${JSON.stringify(contentType(block))} content`,
+          `${label} contains unsupported ${JSON.stringify(contentType(block))} content`,
         )
       }
     }
     if (content.length === 0) {
-      throw unsupportedInput(`message ${JSON.stringify(String(message.id))} has no content`)
+      throw unsupportedInput(`${label} has no content`)
     }
     return {
       type: 'user',
@@ -192,7 +221,10 @@ export class ClaudeContentEncoder {
   }
 
   /** Coalesce one admitted DSH step into the SDK's single querying user frame. */
-  async userMessages(messages: readonly Message[], signal?: AbortSignal): Promise<SDKUserMessage> {
+  async userMessages(
+    messages: readonly ConversationMessage[],
+    signal?: AbortSignal,
+  ): Promise<SDKUserMessage> {
     const content: SdkUserContentBlock[] = []
     for (const message of messages) {
       const encoded = await this.userMessage(message, signal)
@@ -210,7 +242,7 @@ export class ClaudeContentEncoder {
   }
 
   async degradedMessage(
-    messages: readonly Message[],
+    messages: readonly ConversationMessage[],
     transcript: string,
     signal?: AbortSignal,
   ): Promise<SDKUserMessage> {
@@ -233,7 +265,7 @@ export class ClaudeContentEncoder {
     }
   }
 
-  async toolResult(result: ToolResultBlock, signal?: AbortSignal): Promise<CallToolResult> {
+  async toolResult(result: ToolResultMessage, signal?: AbortSignal): Promise<CallToolResult> {
     this.#assertBatch(imageRefs(result.content), 'DSH tool result')
     const content: CallToolResult['content'] = []
     let structuredContent: Record<string, unknown> | undefined

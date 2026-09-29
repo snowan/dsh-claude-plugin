@@ -12,6 +12,7 @@ import type {
   SubprocessHandle,
   SubprocessSpawnSpec,
   SubprocessTerminalHandle,
+  SubprocessTerminalEnvironment,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import * as claudePlugin from '../src/index.js'
@@ -27,6 +28,10 @@ class FakeSubprocessRuntime extends SubprocessRuntime {
   }
 
   override spawnTerminal(_spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
+    return Promise.reject(new Error('not exercised by scaffold'))
+  }
+
+  override terminalEnvironment(): Promise<SubprocessTerminalEnvironment> {
     return Promise.reject(new Error('not exercised by scaffold'))
   }
 }

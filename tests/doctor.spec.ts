@@ -17,16 +17,16 @@ const facts: DoctorPackageFacts = {
   peers: {
     '@deepseek-ai/cordis': { version: '4.0.1', range: '^4.0.1' },
     '@deepseek-ai/dsh-attachment': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
     '@deepseek-ai/dsh-llm': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
     '@deepseek-ai/dsh-subprocess': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
   },
 }
@@ -192,7 +192,7 @@ describe('dsh-claude-plugin doctor', () => {
         ...facts.peers,
         '@deepseek-ai/dsh-llm': {
           version: '0.1.0',
-          range: '>=0.1.1-rc.2 <0.2.0',
+          range: '>=0.2.0-rc.2 <0.3.0',
         },
       },
     }
@@ -324,8 +324,8 @@ describe('dsh-claude-plugin doctor', () => {
   })
 
   it('validates configuration and semver including prerelease lower bounds', async () => {
-    expect(satisfiesVersionRange('0.1.1-rc.2', '>=0.1.1-rc.2 <0.2.0')).toBe(true)
-    expect(satisfiesVersionRange('0.1.1-rc.1', '>=0.1.1-rc.2 <0.2.0')).toBe(false)
+    expect(satisfiesVersionRange('0.2.0-rc.2', '>=0.2.0-rc.2 <0.3.0')).toBe(true)
+    expect(satisfiesVersionRange('0.2.0-rc.1', '>=0.2.0-rc.2 <0.3.0')).toBe(false)
     expect(satisfiesVersionRange('4.9.0', '^4.0.1')).toBe(true)
     expect(satisfiesVersionRange('5.0.0', '^4.0.1')).toBe(false)
     expect(satisfiesVersionRange('not-semver', '>=1.0.0')).toBe(false)
@@ -433,7 +433,7 @@ describe('dsh-claude-plugin doctor', () => {
         peers: {
           ...facts.peers,
           '@deepseek-ai/dsh-llm': {
-            range: '>=0.1.1-rc.2 <0.2.0',
+            range: '>=0.2.0-rc.2 <0.3.0',
             error: 'missing',
           },
         },
