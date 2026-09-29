@@ -1,5 +1,5 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import type { CallId, ToolCallBlock, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, type ToolCallBlock, type ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { ClaudeContentEncoder } from './content.js'
 import { ClaudePluginError, toolProtocolError, toolTimeout } from './errors.js'
 import { canonicalToolJson } from './json.js'
@@ -46,7 +46,7 @@ function parsedArguments(raw: string): Readonly<Record<string, unknown>> {
 }
 
 export function toMcpToolResult(
-  result: ToolResultBlock,
+  result: ToolResultMessage,
   encoder = new ClaudeContentEncoder(),
   signal?: AbortSignal,
 ): Promise<CallToolResult> {
@@ -240,11 +240,11 @@ export class PendingTools {
     }
   }
 
-  async resolveBatch(results: readonly ToolResultBlock[], signal?: AbortSignal): Promise<void> {
+  async resolveBatch(results: readonly ToolResultMessage[], signal?: AbortSignal): Promise<void> {
     if (this.#failure !== undefined) throw this.#failure
     try {
       const resolved = new Set<string>()
-      const planned: Array<{ entry: PendingEntry; result: ToolResultBlock }> = []
+      const planned: Array<{ entry: PendingEntry; result: ToolResultMessage }> = []
       for (const result of results) {
         const id = String(result.toolCallId)
         if (resolved.has(id)) throw toolProtocolError(`DSH repeated tool result ${id}`)
@@ -294,6 +294,6 @@ export class PendingTools {
   }
 }
 
-export function asCallId(value: string): CallId {
-  return value as CallId
+export function asCallId(value: string): ToolCallId {
+  return ToolCallId(value)
 }

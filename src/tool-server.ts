@@ -1,7 +1,7 @@
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
 import type {
   ToolCallBlock,
-  ToolResultBlock,
+  ToolResultMessage,
   ToolSchema as DshToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -134,7 +134,7 @@ export class DshToolServer {
     return this.pending.assertBoundary(calls, generation, signal)
   }
 
-  resolve(results: readonly ToolResultBlock[], signal?: AbortSignal): Promise<void> {
+  resolve(results: readonly ToolResultMessage[], signal?: AbortSignal): Promise<void> {
     return this.pending.resolveBatch(results, signal)
   }
 

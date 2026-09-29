@@ -5,13 +5,11 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import {
-  DOCTOR_EXECUTABLE_POLICIES,
-  type DoctorDependencies,
-  type DoctorExecutablePolicy,
-  type DoctorLiveMode,
-  type DoctorReport,
-  runDoctor,
+import type {
+  DoctorDependencies,
+  DoctorExecutablePolicy,
+  DoctorLiveMode,
+  DoctorReport,
 } from './doctor.js'
 import { verifyProfileTransition, type ProfileVerificationReport } from './profile-verifier.js'
 
@@ -45,8 +43,13 @@ export interface DoctorCliIo {
   readonly readFile: (path: string) => Promise<string>
 }
 
+/** The doctor module, which imports the DSH packages it probes. */
+export type DoctorModule = typeof import('./doctor.js')
+
 export interface DoctorCliDependencies {
   readonly doctor?: DoctorDependencies
+  /** Imports the doctor module; the default imports `./doctor.js`. */
+  readonly importDoctor?: () => Promise<DoctorModule>
   readonly io?: Partial<DoctorCliIo>
 }
 
@@ -99,15 +102,43 @@ function doctorLive(values: Readonly<Record<string, unknown>>): DoctorLiveMode {
   return 'auto'
 }
 
-function doctorPolicy(value: unknown): DoctorExecutablePolicy | undefined {
+function doctorPolicy(
+  value: unknown,
+  policies: readonly DoctorExecutablePolicy[],
+): DoctorExecutablePolicy | undefined {
   if (value === undefined) return undefined
-  if (
-    typeof value !== 'string' ||
-    !(DOCTOR_EXECUTABLE_POLICIES as readonly string[]).includes(value)
-  ) {
-    throw new Error(`--policy must be one of ${DOCTOR_EXECUTABLE_POLICIES.join(', ')}`)
+  if (typeof value !== 'string' || !(policies as readonly string[]).includes(value)) {
+    throw new Error(`--policy must be one of ${policies.join(', ')}`)
   }
   return value as DoctorExecutablePolicy
+}
+
+function missingDshPackage(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND' &&
+    /['"]@deepseek-ai\//.test(error.message)
+  )
+}
+
+/**
+ * Load the doctor, which imports DSH packages, only for the doctor command.
+ * DSH 0.2 resolves those packages inside its launcher, so `dsh plugin exec`
+ * cannot provide them; `verify-profile` needs none of them.
+ */
+async function loadDoctor(
+  importDoctor: () => Promise<DoctorModule> = () => import('./doctor.js'),
+): Promise<DoctorModule> {
+  try {
+    return await importDoctor()
+  } catch (error: unknown) {
+    if (!missingDshPackage(error)) throw error
+    throw new Error(
+      'doctor cannot load the DeepSeek Harness packages it probes; DSH 0.2 does not expose ' +
+        'them to `dsh plugin exec`, so run doctor from a plugin checkout after `npm ci`',
+      { cause: error },
+    )
+  }
 }
 
 function timeout(value: unknown): number | undefined {
@@ -142,7 +173,8 @@ async function doctorCommand(
     io.stdout(HELP)
     return 0
   }
-  const policy = doctorPolicy(parsed.values.policy)
+  const { DOCTOR_EXECUTABLE_POLICIES, runDoctor } = await loadDoctor(dependencies.importDoctor)
+  const policy = doctorPolicy(parsed.values.policy, DOCTOR_EXECUTABLE_POLICIES)
   const timeoutMs = timeout(parsed.values['timeout-ms'])
   const report = await runDoctor(
     {

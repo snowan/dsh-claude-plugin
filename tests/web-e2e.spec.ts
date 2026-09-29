@@ -6,7 +6,9 @@ import {
   historyHasAssistantMarker,
   historyHasToolResultMarker,
   inspectClaudeCatalog,
+  authenticateDshWeb,
   parseDshReadyUrl,
+  parseDshWebLaunch,
   stableFailureCode,
   summarizeHistory,
 } from '../src/web-e2e.js'
@@ -19,8 +21,8 @@ function response(body: unknown, status = 200): Response {
 }
 
 const models = {
-  current: { provider: 'claude-code', model: 'default' },
-  routable: true,
+  default: { provider: 'claude-code', model: 'default' },
+  routableProviders: ['claude-code'],
   groups: [
     {
       id: 'claude-code',
@@ -38,8 +40,9 @@ const models = {
 }
 
 const history = {
-  events: [
+  records: [
     {
+      type: 'event',
       event: {
         type: 'assistant/message',
         seq: 1,
@@ -48,6 +51,7 @@ const history = {
       },
     },
     {
+      type: 'event',
       event: {
         type: 'tool/call',
         seq: 2,
@@ -56,20 +60,18 @@ const history = {
       },
     },
     {
+      type: 'event',
       event: {
         type: 'tool/result',
         seq: 3,
         time: 3,
         data: {
-          message: {
-            content: [
-              { type: 'tool-result', content: [{ type: 'text', text: 'DSH_WEB_TOOL_OK\n' }] },
-            ],
-          },
+          message: { role: 'tool', content: [{ type: 'text', text: 'DSH_WEB_TOOL_OK\n' }] },
         },
       },
     },
     {
+      type: 'event',
       event: {
         type: 'turn/end',
         seq: 4,
@@ -93,9 +95,47 @@ describe('DSH Web E2E contract helpers', () => {
       'http://user@127.0.0.1:1',
       'http://127.0.0.1:1/path',
       'http://127.0.0.1',
+      'http://127.0.0.1:1/?other=1',
+      'http://127.0.0.1:1/?token=a&token=b',
+      'http://127.0.0.1:1/?token=',
+      'http://127.0.0.1:1/path?token=a',
     ]) {
       expect(() => parseDshReadyUrl(`dsh web: ${value}`)).toThrow()
     }
+  })
+
+  it('separates the DSH 0.2 launch token from the loopback origin', () => {
+    expect(parseDshWebLaunch('dsh web: http://127.0.0.1:43123/?token=abc_-1\n')).toEqual({
+      origin: 'http://127.0.0.1:43123',
+      launchUrl: 'http://127.0.0.1:43123/?token=abc_-1',
+    })
+    expect(parseDshReadyUrl('dsh web: http://127.0.0.1:43123/?token=abc')).toBe(
+      'http://127.0.0.1:43123',
+    )
+  })
+
+  it('exchanges the launch token for the session cookie sent with later requests', async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('token=')) {
+        expect(init?.redirect).toBe('manual')
+        return new Response(null, {
+          status: 303,
+          headers: { location: './', 'set-cookie': 'dsh-auth-x=signed; Path=/; HttpOnly' },
+        })
+      }
+      return response({ cookie: new Headers(init?.headers).get('cookie') })
+    })
+    const authenticated = await authenticateDshWeb(fetcher, 'http://127.0.0.1:1/?token=abc')
+    const reply = await authenticated('http://127.0.0.1:1/api/x', {
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(await reply.json()).toEqual({ cookie: 'dsh-auth-x=signed' })
+    await expect(authenticateDshWeb(fetcher, 'http://127.0.0.1:1/')).resolves.toBe(fetcher)
+
+    const rejecting = vi.fn(async () => new Response(null, { status: 401 }))
+    await expect(authenticateDshWeb(rejecting, 'http://127.0.0.1:1/?token=bad')).rejects.toThrow(
+      /HTTP 401/,
+    )
   })
 
   it('uses the public unary envelope and unwraps a successful result', async () => {
@@ -106,21 +146,21 @@ describe('DSH Web E2E contract helpers', () => {
       dshRpc<{ accepted: true }>(
         fetcher,
         'http://127.0.0.1:43210',
-        'session.prompt',
-        { marker: 'not echoed' },
+        'session/prompt',
+        { request: { marker: 'not echoed' } },
         'r1',
       ),
     ).resolves.toEqual({ accepted: true })
     expect(fetcher).toHaveBeenCalledWith(
-      'http://127.0.0.1:43210/api/session.prompt',
+      'http://127.0.0.1:43210/api/session/prompt',
       expect.objectContaining({ method: 'POST' }),
     )
     const init = fetcher.mock.calls[0]?.[1]
     expect(JSON.parse(String(init?.body))).toEqual({
       type: 'client-request',
       rpcId: 'r1',
-      method: 'session.prompt',
-      payload: { marker: 'not echoed' },
+      method: 'session/prompt',
+      payload: { args: { request: { marker: 'not echoed' } } },
     })
   })
 
@@ -129,31 +169,33 @@ describe('DSH Web E2E contract helpers', () => {
       response({
         result: {
           ok: false,
-          error: { code: 'model-unavailable', message: '/private/user/secret prompt' },
+          error: { code: 'session/model-unavailable', message: '/private/user/secret prompt' },
         },
       }),
     )
     const failure = await dshRpc(
       fetcher,
       'http://127.0.0.1:43210',
-      'session.selectModel',
+      'session/selectModel',
       {},
     ).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(DshRpcError)
     expect(String(failure)).not.toContain('secret')
-    expect(stableFailureCode(failure)).toBe('RPC_MODEL_UNAVAILABLE')
+    expect(stableFailureCode(failure)).toBe('RPC_SESSION_MODEL_UNAVAILABLE')
   })
 
   it('fails closed for invalid methods, HTTP failures, and malformed envelopes', async () => {
     const unused = vi.fn()
-    await expect(dshRpc(unused, 'http://127.0.0.1:1', '../bad', {})).rejects.toThrow(
-      'invalid shape',
-    )
+    for (const method of ['../bad', 'session.list', 'session/list/extra']) {
+      await expect(dshRpc(unused, 'http://127.0.0.1:1', method, {})).rejects.toThrow(
+        'invalid shape',
+      )
+    }
     await expect(
-      dshRpc(async () => response({}, 503), 'http://127.0.0.1:1', 'session.list', {}),
+      dshRpc(async () => response({}, 503), 'http://127.0.0.1:1', 'session/list', {}),
     ).rejects.toThrow('HTTP 503')
     await expect(
-      dshRpc(async () => response({ result: {} }), 'http://127.0.0.1:1', 'session.list', {}),
+      dshRpc(async () => response({ result: {} }), 'http://127.0.0.1:1', 'session/list', {}),
     ).rejects.toThrow('boolean ok')
   })
 
@@ -165,13 +207,13 @@ describe('DSH Web E2E contract helpers', () => {
       aliases: ['default', 'sonnet', 'opus', 'haiku'],
       reasoningEfforts: ['low', 'medium', 'high'],
     })
-    expect(() => inspectClaudeCatalog({ ...models, routable: false })).toThrow('not routable')
+    expect(() => inspectClaudeCatalog({ ...models, routableProviders: [] })).toThrow('not routable')
     expect(() =>
       inspectClaudeCatalog({
         ...models,
-        current: { provider: 'deepseek-official', model: 'default' },
+        default: { provider: 'deepseek-official', model: 'default' },
       }),
-    ).toThrow('did not select')
+    ).toThrow('did not default')
     expect(() =>
       inspectClaudeCatalog({ ...models, groups: [{ ...models.groups[0], models: [] }] }),
     ).toThrow('aliases changed')
@@ -199,7 +241,7 @@ describe('DSH Web E2E contract helpers', () => {
 
   it('rejects malformed catalog and history shapes', () => {
     expect(() => inspectClaudeCatalog(null)).toThrow('must be an object')
-    expect(() => historyHasAssistantMarker({ events: {} }, 'x')).toThrow('must be an array')
+    expect(() => historyHasAssistantMarker({ records: {} }, 'x')).toThrow('must be an array')
     expect(stableFailureCode(new Error('/private/path'))).toBe('UNEXPECTED')
   })
 })

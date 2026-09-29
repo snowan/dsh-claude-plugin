@@ -1,11 +1,17 @@
 # Troubleshooting
 
-Start with a machine-readable report from the same DSH profile and environment
-that will run the adapter:
+Start with a machine-readable report from a plugin checkout, in the same
+environment that will run the adapter:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web exec dsh-claude-plugin doctor --json
+npm ci
+npm run build
+node lib/cli.js doctor --json
 ```
+
+DSH 0.2 resolves its own packages only inside the `dsh` launcher. Through
+`dsh plugin --profile web exec dsh-claude-plugin doctor`, the doctor exits `2`
+and reports that it must run from a plugin checkout after `npm ci`.
 
 Use `--no-live` for a keyless structural check and `--live` for conclusive
 authentication. Doctor exits `0` for `PASS` or diagnostic `WARN`, `1` when any
@@ -17,7 +23,7 @@ check fails, and `2` for invalid command usage.
 | --- | --- | --- |
 | `runtime.node` | Node is outside `^22.19.0 || >=24.0.0` | Install a supported Node release, reinstall dependencies, rerun doctor. |
 | `package.sdk` | Installed Agent SDK differs from the exact package pin | Run `npm ci` or reinstall the exact plugin artifact; do not override its SDK dependency. |
-| `package.dsh-peers` | A required DSH/Cordis peer is absent or outside its declared range | Install through `dsh plugin` in the target profile and use DSH `0.1.1-rc.2`. |
+| `package.dsh-peers` | A required DSH/Cordis peer is absent or outside its declared range | Run `npm ci` in the checkout. In a profile, `dsh plugin add` and profile startup enforce the ranges for DSH `0.2.0-rc.2`. |
 | `executable.resolve` | Host `claude` is missing, or fallback policy was used | Install Claude Code or select `--policy bundled-only`/`host-then-bundled` intentionally. |
 | `executable.version` | Version output is invalid, timed out, or differs from bundled parity | Upgrade the host CLI; version skew is a warning only when the CLI otherwise works. |
 | `auth.metadata` | `claude auth status --json` is logged out or invalid | Run `claude auth login`; never copy credential files into the plugin. |
@@ -64,7 +70,7 @@ repeat the same profile command.
 Dump the effective tree without booting DSH:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config
 ```
 
 The tree must contain exactly one `llm-claude-code` row named
@@ -87,7 +93,7 @@ Treat this as a server-side symptom, not an authentication diagnosis:
 
 1. identify the process listening on port 3080 and its cwd;
 2. confirm it uses the intended DSH version/profile and plugin artifact;
-3. run installed-profile doctor;
+3. run the doctor from a plugin checkout;
 4. inspect sanitized server logs for a stable adapter code;
 5. reproduce a direct Claude generation with the same model.
 

@@ -1,22 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { assertSdkUserInput, LiveInputCursor } from '../src/input.js'
+import type { ClaudeGenerateOptions, ConversationMessage } from '../src/request.js'
 
 function message(
   id: string,
-  role: Message['role'],
+  role: 'user' | 'assistant',
   text: string,
-  source: Message['source'] = { kind: 'user' },
-): Message {
+  source: ConversationMessage['source'] = { kind: 'user' },
+): ConversationMessage {
   return {
     id: id as never,
     role,
     content: [{ type: 'text', text }],
     source,
-  }
+  } as ConversationMessage
 }
 
-function options(messages: Message[], extra: Partial<GenerateOptions> = {}): GenerateOptions {
+function options(
+  messages: ConversationMessage[],
+  extra: Partial<ClaudeGenerateOptions> = {},
+): ClaudeGenerateOptions {
   return { provider: 'claude-code', model: 'default', messages, ...extra }
 }
 
@@ -163,7 +167,7 @@ describe('live SDK input cursor', () => {
       arguments: '{"path":"/fixture"}',
     }
     cursor.commit(first, { model: 'default', content: [toolCall] })
-    const assistant: Message = {
+    const assistant: ConversationMessage = {
       id: 'a1' as never,
       role: 'assistant',
       content: [toolCall],
@@ -173,22 +177,17 @@ describe('live SDK input cursor', () => {
         model: 'default',
       },
     }
-    const toolResult: Message = {
+    const toolResult: ToolResultMessage = {
       id: 'r1' as never,
-      role: 'user',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'toolu_read_1' as never,
-          content: [{ type: 'text', text: 'fixture-value' }],
-          isError: false,
-        },
-      ],
+      role: 'tool',
+      toolCallId: 'toolu_read_1' as never,
+      content: [{ type: 'text', text: 'fixture-value' }],
+      isError: false,
       source: { kind: 'tool', callId: 'toolu_read_1' as never },
     }
     expect(await cursor.prepareStep(options([...first, assistant, toolResult]))).toEqual({
       kind: 'tool-results',
-      results: toolResult.content,
+      results: [toolResult],
     })
     await expect(cursor.prepare(options([...first, assistant, toolResult]))).rejects.toThrow(
       /resume/,
@@ -206,33 +205,28 @@ describe('live SDK input cursor', () => {
       arguments: '{}',
     }
     cursor.commit(first, { model: 'default', content: [call] })
-    const assistant: Message = {
+    const assistant: ConversationMessage = {
       id: 'a1' as never,
       role: 'assistant',
       content: [call],
       source: { kind: 'model', provider: 'claude-code', model: 'default' },
     }
-    const valid: Message = {
+    const valid: ToolResultMessage = {
       id: 'r1' as never,
-      role: 'user',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'toolu_1' as never,
-          content: [{ type: 'text', text: 'ok' }],
-        },
-      ],
+      role: 'tool',
+      toolCallId: 'toolu_1' as never,
+      content: [{ type: 'text', text: 'ok' }],
       source: { kind: 'tool', callId: 'toolu_1' as never },
     }
     for (const invalid of [
+      message('r1', 'user', 'a user message is not a tool result'),
       { ...valid, role: 'assistant' as const },
-      { ...valid, source: { kind: 'user' as const } },
-      { ...valid, content: [] },
+      { ...valid, toolCallId: 'other' as never },
       { ...valid, source: { kind: 'tool' as const, callId: 'other' as never } },
     ]) {
       await expect(
-        cursor.prepareStep(options([...first, assistant, invalid as Message])),
-      ).rejects.toThrow(/tool boundary|correlation|content/)
+        cursor.prepareStep(options([...first, assistant, invalid as ConversationMessage])),
+      ).rejects.toThrow(/tool boundary|correlation/)
     }
   })
 
@@ -277,6 +271,6 @@ describe('live SDK input cursor', () => {
           }),
         ]),
       ),
-    ).rejects.toThrow(/only non-tool user messages/)
+    ).rejects.toThrow(/only user messages/)
   })
 })

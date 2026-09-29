@@ -3,14 +3,15 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   ImageAttachmentRef,
   ImageMediaType,
-  ImageRequestPolicy,
+  ImageRequestTarget,
   RequestImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import type { Message, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import type { ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import {
   CLAUDE_MAX_ENCODED_IMAGE_BYTES,
   CLAUDE_MAX_IMAGE_DIMENSION,
   ClaudeContentEncoder,
+  claudeImageTarget,
   type AttachmentReader,
 } from '../src/content.js'
 
@@ -44,7 +45,7 @@ class FixtureAttachments implements AttachmentReader {
   readonly readImageRequest = vi.fn(
     async (
       attachment: ImageAttachmentRef,
-      _policy: ImageRequestPolicy,
+      _target: ImageRequestTarget,
     ): Promise<RequestImageAttachment> => {
       const data = mediaFixtures[attachment.mediaType]
       return {
@@ -63,17 +64,19 @@ class FixtureAttachments implements AttachmentReader {
   )
 }
 
-function user(content: Message['content']): Message {
+function user(content: UserMessage['content']): UserMessage {
   return { id: 'user-image' as never, role: 'user', source: { kind: 'user' }, content }
 }
 
-function toolResult(content: unknown[], isError?: boolean): ToolResultBlock {
+function toolResult(content: unknown[], isError?: boolean): ToolResultMessage {
   return {
-    type: 'tool-result',
+    id: 'tool-result' as never,
+    role: 'tool',
+    source: { kind: 'tool', callId: 'toolu_fixture' as never },
     toolCallId: 'toolu_fixture' as never,
     content,
     ...(isError === undefined ? {} : { isError }),
-  } as ToolResultBlock
+  } as ToolResultMessage
 }
 
 describe('Claude rich-content encoding', () => {
@@ -101,10 +104,7 @@ describe('Claude rich-content encoding', () => {
       ])
       expect(attachments.readImageRequest).toHaveBeenCalledWith(
         expect.objectContaining({ mediaType }),
-        expect.objectContaining({
-          maxBytes: CLAUDE_MAX_ENCODED_IMAGE_BYTES,
-          maxPixels: 64_000_000,
-        }),
+        { width: 1, height: 1, maxBytes: CLAUDE_MAX_ENCODED_IMAGE_BYTES },
         undefined,
       )
     },
@@ -330,5 +330,39 @@ describe('Claude rich-content encoding', () => {
         user([{ type: 'image', attachment: ref('image/png') }]),
       ),
     ).rejects.toThrow(/identity or media type/)
+  })
+
+  it('fits request images inside the pixel budget and the Claude edge bound without enlarging', () => {
+    const sized = (width: number, height: number): ImageAttachmentRef => ({
+      ...ref('image/png'),
+      width,
+      height,
+    })
+    expect(claudeImageTarget(sized(640, 480), 64_000_000, 100)).toEqual({
+      width: 640,
+      height: 480,
+      maxBytes: 100,
+    })
+    expect(claudeImageTarget(sized(4_000, 4_000), 4_000_000, 100)).toEqual({
+      width: 2_000,
+      height: 2_000,
+      maxBytes: 100,
+    })
+    expect(claudeImageTarget(sized(16_000, 100), 64_000_000, 100)).toEqual({
+      width: CLAUDE_MAX_IMAGE_DIMENSION,
+      height: 50,
+      maxBytes: 100,
+    })
+  })
+
+  it('encodes request-only DSH user input that has no durable identity', async () => {
+    const encoded = await new ClaudeContentEncoder().userMessage({
+      role: 'user',
+      content: [{ type: 'text', text: 'title this session' }],
+    })
+    expect(encoded.message.content).toEqual([{ type: 'text', text: 'title this session' }])
+    await expect(
+      new ClaudeContentEncoder().userMessage({ role: 'user', content: [] }),
+    ).rejects.toThrow(/request user input has no content/)
   })
 })

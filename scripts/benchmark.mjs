@@ -19,7 +19,7 @@ import { deflateSync } from 'node:zlib'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { Context } from '@deepseek-ai/cordis'
 import AttachmentStore from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import {
@@ -41,7 +41,7 @@ import { MCP_ALWAYS_LOAD_META } from '../lib/tool-server.js'
 import { sdkEnvironment } from '../lib/process.js'
 import * as claudePlugin from '../lib/index.js'
 
-const EXPECTED_DSH_VERSION = '0.1.1-rc.2'
+const EXPECTED_DSH_VERSION = '0.2.0-rc.2'
 const MAX_ITERATIONS = 12
 const DEFAULT_TIMEOUT_MS = 180_000
 const MAX_TIMEOUT_MS = 15 * 60_000
@@ -1046,19 +1046,7 @@ function dshToolResultMessage(call, result) {
     result.kind === 'image'
       ? [{ type: 'image', attachment: IMAGE_REF }]
       : [{ type: 'text', text: result.text }]
-  return {
-    id: randomUUID(),
-    role: 'user',
-    content: [
-      {
-        type: 'tool-result',
-        toolCallId: call.id,
-        content,
-        ...(result.ok ? {} : { isError: true }),
-      },
-    ],
-    source: { kind: 'tool', callId: call.id },
-  }
+  return createToolResultMessage({ callId: call.id, content, isError: !result.ok })
 }
 
 async function createDshHarness(config) {

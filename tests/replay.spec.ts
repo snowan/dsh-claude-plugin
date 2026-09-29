@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { canonicalToolJson } from '../src/json.js'
+import type { ConversationMessage } from '../src/request.js'
 import {
   assistantFingerprint,
   createReplayEnvelope,
@@ -15,7 +18,7 @@ const transcriptAt = '22222222-2222-4222-8222-222222222222'
 const system = 'DSH owns the harness.'
 const cwd = '/workspace/project'
 
-function user(id: string, text: string): Message {
+function user(id: string, text: string): ConversationMessage {
   return {
     id: id as never,
     role: 'user',
@@ -24,7 +27,11 @@ function user(id: string, text: string): Message {
   }
 }
 
-function assistant(id: string, content: ContentBlock[], replayState?: unknown): Message {
+function assistant(
+  id: string,
+  content: ContentBlock[],
+  replayState?: unknown,
+): ConversationMessage {
   return {
     id: id as never,
     role: 'assistant',
@@ -39,7 +46,7 @@ function assistant(id: string, content: ContentBlock[], replayState?: unknown): 
 }
 
 function envelope(
-  messages: Message[],
+  messages: ConversationMessage[],
   content: ContentBlock[],
   phase: 'settled' | 'awaiting-tools' = 'settled',
 ) {
@@ -105,17 +112,12 @@ describe('durable Claude replay planning', () => {
       arguments: '{"path":"/missing"}',
     }
     const toolAssistant = assistant('a1', [call])
-    const failedTool: Message = {
+    const failedTool: ToolResultMessage = {
       id: 'r1' as never,
-      role: 'user',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'toolu_read_1' as never,
-          content: [{ type: 'text', text: 'not found' }],
-          isError: true,
-        },
-      ],
+      role: 'tool',
+      toolCallId: 'toolu_read_1' as never,
+      content: [{ type: 'text', text: 'not found' }],
+      isError: true,
       source: { kind: 'tool', callId: 'toolu_read_1' as never },
     }
     const finalContent: ContentBlock[] = [{ type: 'text', text: 'The fixture is missing.' }]
@@ -130,6 +132,45 @@ describe('durable Claude replay planning', () => {
       resumeSessionAt: transcriptAt,
       forkSession: true,
     })
+  })
+
+  it('fingerprints a DSH 0.2 tool-role result exactly as its DSH 0.1 tool-result block', () => {
+    const result: ToolResultMessage = {
+      id: 'r1' as never,
+      role: 'tool',
+      toolCallId: 'toolu_read_1' as never,
+      content: [{ type: 'text', text: 'fixture-value' }],
+      isError: false,
+      source: { kind: 'tool', callId: 'toolu_read_1' as never },
+    }
+    const legacyProjection = [
+      {
+        id: 'r1',
+        role: 'user',
+        source: { kind: 'tool', callId: 'toolu_read_1' },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'toolu_read_1',
+            content: [{ type: 'text', text: 'fixture-value' }],
+            isError: false,
+          },
+        ],
+      },
+    ]
+    expect(messageFingerprint([result])).toBe(
+      createHash('sha256').update(canonicalToolJson(legacyProjection), 'utf8').digest('hex'),
+    )
+    expect(messageFingerprint([result])).not.toBe(
+      messageFingerprint([{ ...result, isError: true }]),
+    )
+  })
+
+  it('fingerprints request-only user input without inventing an identity', () => {
+    const input: ConversationMessage = { role: 'user', content: [{ type: 'text', text: 'title' }] }
+    expect(degradedReplayText([input])).toContain('"source":{"kind":"request"}')
+    expect(degradedReplayText([input])).not.toContain('"id"')
+    expect(planColdStart([input], system, cwd)).toEqual({ mode: 'fresh', pending: [input] })
   })
 
   it('degrades divergent, imported, malformed, or forced history to one canonical envelope', () => {
@@ -191,7 +232,7 @@ describe('durable Claude replay planning', () => {
   it('bounds degraded history and preserves durable image descriptors without bytes', () => {
     const oversized = user('large', 'x'.repeat(MAX_DEGRADED_REPLAY_BYTES))
     expect(() => degradedReplayText([oversized])).toThrow(/exceeds/)
-    const image: Message = {
+    const image: ConversationMessage = {
       ...user('image', 'unused'),
       content: [
         {

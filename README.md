@@ -22,6 +22,14 @@ ambient MCP servers, settings, hooks, plugins, and main-session skills remain
 disabled. Each MCP handler pauses until DSH executes the visible tool call and
 returns the exact correlated result; the same Claude query then resumes.
 
+DSH 0.2 sends the system prompt as the leading `system` message of each
+request and each tool result as a `tool`-role message. The adapter maps the
+leading system message to the Claude system prompt and each tool-role message
+to the pending MCP call it answers. The route declares no mid-conversation
+system prompt or tool-update mode, so a later `system` message or a
+`developer` tool-update message fails with `CLAUDE_UNSUPPORTED_INPUT`. Images
+that DSH has offloaded reach Claude as DSH's placeholder text.
+
 The lifecycle milestone adds bounded session reuse and restart recovery. Every
 successful step carries a versioned replay anchor bound to the DSH prefix,
 assistant content, system prompt, working directory, safe Claude session/fork
@@ -52,7 +60,7 @@ bypassing DSH.
 ## Requirements
 
 - Node.js `22.19+` or `24+`
-- DeepSeek Harness `0.1.1-rc.2`
+- DeepSeek Harness `0.2.0-rc.2`
 - Claude Code CLI authenticated with a successful live generation
 - `pnpm` on `PATH` for `dsh plugin` profile management
 

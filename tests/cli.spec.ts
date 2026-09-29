@@ -15,16 +15,16 @@ const packageFacts: DoctorPackageFacts = {
   peers: {
     '@deepseek-ai/cordis': { version: '4.0.1', range: '^4.0.1' },
     '@deepseek-ai/dsh-attachment': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
     '@deepseek-ai/dsh-llm': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
     '@deepseek-ai/dsh-subprocess': {
-      version: '0.1.1-rc.2',
-      range: '>=0.1.1-rc.2 <0.2.0',
+      version: '0.2.0-rc.2',
+      range: '>=0.2.0-rc.2 <0.3.0',
     },
   },
 }

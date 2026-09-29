@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyProfileTransition } from '../lib/profile-verifier.js'
 
-const EXPECTED_DSH_VERSION = '0.1.1-rc.2'
+const EXPECTED_DSH_VERSION = '0.2.0-rc.2'
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1_024 * 1_024
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const keep = process.argv.includes('--keep')
@@ -95,12 +95,33 @@ try {
   dsh(['plugin', '--profile', 'web', 'add', tarball, '--ignore-scripts'])
   const installed = dsh(['--profile', 'web', '--dump-config'])
 
-  const doctorRaw = dsh([
-    'plugin',
-    '--profile',
-    'web',
-    'exec',
-    'dsh-claude-plugin',
+  // DSH 0.2 resolves DSH packages only inside its launcher, so the installed
+  // bin runs verify-profile, which imports none, and the checkout runs doctor.
+  const beforePath = join(fixture, 'before.yml')
+  const installedPath = join(fixture, 'installed.yml')
+  writeFileSync(beforePath, before, 'utf8')
+  writeFileSync(installedPath, installed, 'utf8')
+  const installedVerification = JSON.parse(
+    dsh([
+      'plugin',
+      '--profile',
+      'web',
+      'exec',
+      'dsh-claude-plugin',
+      'verify-profile',
+      '--before',
+      beforePath,
+      '--installed',
+      installedPath,
+      '--json',
+    ]),
+  )
+  if (installedVerification.pass !== true) {
+    throw new Error('the installed verify-profile command rejected the install transition')
+  }
+
+  const doctorRaw = execute(process.execPath, [
+    join(repository, 'lib', 'cli.js'),
     'doctor',
     '--policy',
     'bundled-only',
@@ -113,7 +134,7 @@ try {
   )
   for (const id of ['sdk.startup', 'mcp.handshake', 'process.cleanup']) {
     if (doctorChecks.get(id) !== 'pass') {
-      throw new Error(`installed doctor check ${id} did not pass`)
+      throw new Error(`checkout doctor check ${id} did not pass`)
     }
   }
 

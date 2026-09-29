@@ -1,20 +1,28 @@
 import { cwd as processCwd } from 'node:process'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { ContentBlock, GenerateOptions, Message, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { ClaudeContentEncoder } from './content.js'
 import { CLAUDE_ERROR_CODES, claudeError, protocolError, unsupportedInput } from './errors.js'
 import { PROVIDER_ID } from './models.js'
 import { planColdStart } from './replay.js'
+import type { ClaudeGenerateOptions, ConversationMessage } from './request.js'
 
 function contentEqual(left: readonly ContentBlock[], right: readonly ContentBlock[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function messageEqual(left: Message, right: Message): boolean {
+function toolOutcome(message: ConversationMessage): string | undefined {
+  return message.role === 'tool'
+    ? JSON.stringify([String(message.toolCallId), message.isError ?? null])
+    : undefined
+}
+
+function messageEqual(left: ConversationMessage, right: ConversationMessage): boolean {
   return (
     left.id === right.id &&
     left.role === right.role &&
     JSON.stringify(left.source) === JSON.stringify(right.source) &&
+    toolOutcome(left) === toolOutcome(right) &&
     contentEqual(left.content, right.content)
   )
 }
@@ -39,7 +47,7 @@ export type LiveInputPlan =
       readonly messages: SDKUserMessage[]
       readonly start?: ClaudeStartPlan
     }
-  | { readonly kind: 'tool-results'; readonly results: ToolResultBlock[] }
+  | { readonly kind: 'tool-results'; readonly results: ToolResultMessage[] }
 
 export interface PrepareStepOptions {
   readonly forceDegraded?: boolean
@@ -56,31 +64,25 @@ export function assertSdkUserInput(message: SDKUserMessage): void {
   }
 }
 
-function toolResult(message: Message): ToolResultBlock {
-  if (
-    message.role !== 'user' ||
-    message.source.kind !== 'tool' ||
-    message.content.length !== 1 ||
-    message.content[0]?.type !== 'tool-result'
-  ) {
+function toolResult(message: ConversationMessage): ToolResultMessage {
+  if (message.role !== 'tool') {
     throw unsupportedInput('a Claude tool boundary accepts only DSH tool-result messages')
   }
-  const result = message.content[0]
-  if (String(result.toolCallId) !== String(message.source.callId)) {
+  if (String(message.toolCallId) !== String(message.source.callId)) {
     throw unsupportedInput('DSH tool-result message correlation is unsupported')
   }
-  return result
+  return message
 }
 
 /** Tracks the exact DSH prefix already represented by a live SDK query. */
 export class LiveInputCursor {
-  #prefix: readonly Message[] = []
+  #prefix: readonly ConversationMessage[] = []
   #assistant: CommittedAssistant | undefined
 
   constructor(readonly encoder = new ClaudeContentEncoder()) {}
 
   async prepareStep(
-    options: GenerateOptions,
+    options: ClaudeGenerateOptions,
     control: PrepareStepOptions = {},
   ): Promise<LiveInputPlan> {
     if (options.temperature !== undefined) {
@@ -131,7 +133,8 @@ export class LiveInputCursor {
       if (options.messages.length === 0) {
         throw unsupportedInput('Claude generation requires new user content')
       }
-      if (options.messages.at(-1)?.role !== 'user') {
+      const last = options.messages.at(-1)?.role
+      if (last !== 'user' && last !== 'tool') {
         throw unsupportedInput('Claude generation requires new user content after prior history')
       }
       const cold = planColdStart(
@@ -174,7 +177,7 @@ export class LiveInputCursor {
     }
   }
 
-  async prepare(options: GenerateOptions): Promise<SDKUserMessage[]> {
+  async prepare(options: ClaudeGenerateOptions): Promise<SDKUserMessage[]> {
     const plan = await this.prepareStep(options)
     if (plan.kind !== 'prompt') {
       throw unsupportedInput('tool results must resume the live Claude MCP call')
@@ -182,7 +185,7 @@ export class LiveInputCursor {
     return plan.messages
   }
 
-  commit(messages: readonly Message[], assistant: CommittedAssistant): void {
+  commit(messages: readonly ConversationMessage[], assistant: CommittedAssistant): void {
     this.#prefix = [...messages]
     this.#assistant = {
       model: assistant.model,
